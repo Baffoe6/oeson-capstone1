@@ -1,0 +1,7 @@
+server:
+  persistentVolume:
+    enabled: false
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 100m
