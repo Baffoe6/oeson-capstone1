@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oeson-config
+  namespace: microservices
+data:
+  APP_ENV: "production"

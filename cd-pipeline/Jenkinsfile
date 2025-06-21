@@ -1,0 +1,93 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKERHUB_CREDENTIALS = credentials('dockerhub-creds')      // Stored in Jenkins Credentials
+        KUBECONFIG_CRED = credentials('kubeconfig-creds')           // Base64-encoded kubeconfig if needed
+        DOCKER_IMAGE = 'baffoe6/oeso-app:latest'
+    }
+
+    stages {
+        stage('Checkout Code') {
+            steps {
+                git 'https://github.com/Baffoe6/oeson-capstone1.git'
+            }
+        }
+
+        stage('Terraform Init & Apply') {
+            dir('infra/terraform') {
+                steps {
+                    sh 'terraform init'
+                    sh 'terraform apply -auto-approve'
+                }
+            }
+        }
+
+        stage('Ansible Provisioning') {
+            steps {
+                sh '''
+                    ansible-playbook ansible/playbooks/jenkins.yml
+                    ansible-playbook ansible/playbooks/docker.yml
+                    ansible-playbook ansible/playbooks/k8s-setup.yml
+                '''
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh 'docker build -t $DOCKER_IMAGE -f docker/Dockerfile .'
+            }
+        }
+
+        stage('Push to DockerHub') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    sh '''
+                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+                        docker push $DOCKER_IMAGE
+                    '''
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                sh 'kubectl apply -f k8s/'
+            }
+        }
+
+        stage('Setup Monitoring (Prometheus & Grafana)') {
+            steps {
+                sh '''
+                    kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+
+                    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+                    helm repo add grafana https://grafana.github.io/helm-charts
+                    helm repo update
+
+                    helm install monitoring-prometheus prometheus-community/prometheus \
+                      --namespace monitoring \
+                      --set server.persistentVolume.enabled=false \
+                      --set server.resources.requests.cpu=100m \
+                      --set server.resources.requests.memory=128Mi
+
+                    helm install monitoring-grafana grafana/grafana \
+                      --namespace monitoring \
+                      --set adminPassword=admin \
+                      --set service.type=NodePort \
+                      --set service.nodePort=30000
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Pipeline executed successfully.'
+        }
+        failure {
+            echo '❌ Pipeline failed. Check logs for details.'
+        }
+    }
+}
+
